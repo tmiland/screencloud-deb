@@ -1,0 +1,112 @@
+name: Build .deb
+
+on:
+  schedule:
+    - cron: "17 4 * * *" # daily; checks upstream for a new ScreenCloud release
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Upstream version to build (e.g. 1.6.2). Empty = latest."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      exists: ${{ steps.exists.outputs.exists }}
+    steps:
+      - name: Resolve upstream version
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VER="${{ inputs.version }}"
+          else
+            VER=$(curl -sSL -H "Authorization: Bearer $GH_TOKEN" \
+              https://api.github.com/repos/olav-st/screencloud/releases/latest \
+              | jq -r '.tag_name' | sed 's/^v//')
+          fi
+          test -n "$VER"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether this version is already released
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.ver.outputs.version }}" \
+               -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.exists == 'false' || inputs.version != ''
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            appimage_arch: x86_64
+          - arch: arm64
+            appimage_arch: aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download upstream AppImage
+        env:
+          VER: ${{ needs.check.outputs.version }}
+        run: |
+          URL="https://github.com/olav-st/screencloud/releases/download/v${VER}/ScreenCloud-v${VER}-${{ matrix.appimage_arch }}.AppImage"
+          echo "Downloading $URL"
+          curl -fSL -o sc.AppImage "$URL"
+
+      - name: Repackage into .deb
+        env:
+          VER: ${{ needs.check.outputs.version }}
+        run: |
+          bash scripts/build-deb.sh "$VER" sc.AppImage dist "${{ matrix.arch }}"
+
+      - name: Upload deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: screencloud-deb-${{ matrix.arch }}
+          path: dist/*.deb
+          if-no-files-found: error
+
+  publish:
+    needs: [check, build]
+    if: needs.check.outputs.exists == 'false' || inputs.version != ''
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download deb artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ needs.check.outputs.version }}
+        run: |
+          ls -lh dist
+          if gh release view "v${VER}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v${VER} already exists; uploading/overwriting assets"
+            gh release upload "v${VER}" dist/*.deb --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "v${VER}" dist/*.deb \
+              -R "$GITHUB_REPOSITORY" \
+              --title "ScreenCloud ${VER}" \
+              --notes "Repackaged from the upstream ScreenCloud v${VER} AppImage.
+          Source: https://github.com/olav-st/screencloud/releases/tag/v${VER}"
+          fi
