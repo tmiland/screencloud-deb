@@ -19,10 +19,23 @@ trap 'rm -rf "$WORK"' EXIT
 PKG="$WORK/pkg"
 PREFIX="/opt/screencloud"
 
-# 1. Extract the AppImage
-install -m 0755 "$APPIMAGE" "$WORK/app.AppImage"
-( cd "$WORK" && "$WORK/app.AppImage" --appimage-extract >/dev/null )
+# 1. Extract the AppImage.
+#    We unpack the embedded squashfs directly (instead of running the AppImage's
+#    runtime) so this works for foreign architectures (e.g. arm64 AppImage on an
+#    amd64 runner) without qemu.
+extract_appimage() { # extract_appimage <image> <dest>
+  local img=$1 dest=$2 off
+  for off in $(LC_ALL=C grep -abo 'hsqs' "$img" | cut -d: -f1); do
+    if unsquashfs -q -o "$off" -d "$dest" "$img" >/dev/null 2>&1; then
+      return 0
+    fi
+    rm -rf "$dest"
+  done
+  echo "!! could not extract squashfs from $img" >&2
+  return 1
+}
 APPDIR="$WORK/squashfs-root"
+extract_appimage "$APPIMAGE" "$APPDIR"
 
 # 2. Lay out the package tree
 mkdir -p "$PKG$PREFIX" "$PKG/usr/bin" "$PKG/usr/share/applications" \
