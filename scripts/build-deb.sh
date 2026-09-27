@@ -114,6 +114,6 @@ find "$PKG$PREFIX/usr/local/bin" -type f -exec chmod 755 {} + 2>/dev/null || tru
 
 # 4. build
 mkdir -p "$OUTDIR"
-DEB="$OUTDIR/screencloud_${VERSION}_${DEB_ARCH}.deb"
+DEB="$OUTDIR/screencloud-${VERSION}-linux-${DEB_ARCH}.deb"
 dpkg-deb --root-owner-group -Zzstd -b "$PKG" "$DEB"
 echo "built: $DEB"
